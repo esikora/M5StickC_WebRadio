@@ -16,7 +16,7 @@ Internet radio application for an M5StickC Plus (ESP32) with I²S digital audio 
 - PCM5102 I²S DAC board
 
 #### Libraries used
-- M5StickCPlus
+- [M5StickCPlus](https://github.com/m5stack/M5StickC-Plus)
 - [ESP32-audioI2S](https://github.com/schreibfaul1/ESP32-audioI2S)
 
 ## Project Description
