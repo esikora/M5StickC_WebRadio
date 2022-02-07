@@ -2,6 +2,7 @@
 #include <driver/dac.h>
 #include "Audio.h"
 #include "WifiCredentials.h"
+#include "BluetoothA2DPSink.h"
 
 const uint8_t kPinI2S_BCLK = GPIO_NUM_0; // yellow (PCM5102A board: BCK)
 const uint8_t kPinI2S_LRCK = GPIO_NUM_26; // brown (PCM5102A board: LRCK)
@@ -101,6 +102,16 @@ uint8_t volumeNormal_ = kVolumeMax;
 uint64_t timeConnect_ = 0;
 
 /**
+ * Instance of the 'BluetoothA2DPSink' class from the 'ESP32-A2DP' library.
+ */ 
+BluetoothA2DPSink a2dp_;
+
+enum DeviceMode {RADIO = 0, A2DP = 1};
+typedef enum DeviceMode t_DeviceMode;
+
+t_DeviceMode deviceMode_ = RADIO;
+
+/**
  * Enable or disable the shutdown circuit of the amplifier.
  * Amplifier: M5Stack SPK hat with PAM8303.
  * - b = true  --> GPIO_0 = 0 : Shutdown enabled
@@ -122,6 +133,11 @@ void setAudioShutdown(bool b) {
  */
 void audioProcessing(void *p) {
     while (true) {
+        if (deviceMode_ != RADIO) {
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
+        }
+
         // Process requested change of audio volume
         if (volumeCurrentChangedFlag_) {
             audio_.setVolume(volumeCurrent_);
@@ -266,87 +282,110 @@ void loop() {
     // Let M5StickC update its state
     M5.update();
 
-    // Button A: Switch to next station
-    if (M5.BtnA.wasPressed()) {
-        
-        // Turn down volume
-        volumeCurrent_ = 0;
-        volumeCurrentF_ = 0.0f;
-        volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
+    if (M5.BtnB.wasPressed()) {
+        if (deviceMode_ == RADIO) {
+            deviceMode_ = A2DP;
 
-        // Advance station index to next station
-        stationIndex_ = (stationIndex_ + 1) % kNumStations;
-        stationChanged_ = true; // Raise flag for the audio task
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            
+            audio_.stopSong();
 
-        // Erase station name
-        stationStr_ = "";
-        stationUpdatedFlag_ = true; // Raise flag for display update routine
+            i2s_pin_config_t my_pin_config = {
+                .bck_io_num = kPinI2S_BCLK,
+                .ws_io_num = kPinI2S_LRCK,
+                .data_out_num = kPinI2S_SD,
+                .data_in_num = I2S_PIN_NO_CHANGE
+            };
 
-        // Erase stream info
-        titleStr_ = "";
-        titleUpdatedFlag_ = true; // Raise flag for display update routine
+            a2dp_.set_pin_config(my_pin_config);
+            a2dp_.start(kDeviceName);
+        }
     }
-    else {
-        // Increase volume gradually after station change
-        if (!stationChangedMute_ && volumeCurrent_ < volumeNormal_) {
-            volumeCurrentF_ += 0.25;
-            volumeCurrent_ = (uint8_t) volumeCurrentF_;
+
+    if (deviceMode_ == RADIO) {
+
+        // Button A: Switch to next station
+        if (M5.BtnA.wasPressed()) {
+            
+            // Turn down volume
+            volumeCurrent_ = 0;
+            volumeCurrentF_ = 0.0f;
             volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
 
-            M5.Lcd.setTextFont(1);
-            M5.Lcd.setTextSize(1);
-            M5.Lcd.setCursor(3, M5.Lcd.height() - M5.Lcd.fontHeight() - 3);
-            M5.Lcd.setTextColor(TFT_GREEN, TFT_BLACK);
-            M5.Lcd.printf("Vol: %2u", volumeCurrent_);
-        }
-    }
+            // Advance station index to next station
+            stationIndex_ = (stationIndex_ + 1) % kNumStations;
+            stationChanged_ = true; // Raise flag for the audio task
 
-    if (connectionError_) {
-        stationSprite_.fillSprite(TFT_RED);
-        stationSprite_.setTextColor(TFT_WHITE);
-        stationSprite_.setCursor(4, 0);
-        stationSprite_.print("Stream unavailable");
-        stationSprite_.pushSprite(0, 2); // Render sprite to screen
+            // Erase station name
+            stationStr_ = "";
+            stationUpdatedFlag_ = true; // Raise flag for display update routine
 
-        vTaskDelay(200 / portTICK_PERIOD_MS); // Wait until next cycle
-    }
-    else {
-        // Update the station name if flag is raised
-        if (stationUpdatedFlag_) {
-            stationSprite_.fillSprite(TFT_BLACK);
-            stationSprite_.setTextColor(TFT_ORANGE);
-            stationSprite_.setCursor(4, 0);
-            stationSprite_.print(stationStr_);
-
-            stationUpdatedFlag_ = false; // Clear update flag
-
-            stationSprite_.pushSprite(0, 2); // Render sprite to screen
-        }
-
-        // Update the song title if flag is raised
-        if (titleUpdatedFlag_) {
-            titleSprite_.fillSprite(TFT_BLACK);
-            titleSprite_.pushSprite(0, 40); // Wipe out the previous title from the screen
-
-            titleSprite_.setCursor(0, 0);
-            titleSprite_.print(titleStr_);
-
-            titlePosX_ = M5.Lcd.width(); // Start scrolling at right side of screen
-            titleTextWidth_ = min( titleSprite_.textWidth(titleStr_), kTitleSpriteWidth ); // width of the title required for scrolling
-
-            titleUpdatedFlag_ = false; // Clear update flag
+            // Erase stream info
+            titleStr_ = "";
+            titleUpdatedFlag_ = true; // Raise flag for display update routine
         }
         else {
-            titlePosX_-= 1; // Move sprite one pixel to the left
-            titleSprite_.pushSprite(titlePosX_, 40); // Render sprite to screen
+            // Increase volume gradually after station change
+            if (!stationChangedMute_ && volumeCurrent_ < volumeNormal_) {
+                volumeCurrentF_ += 0.25;
+                volumeCurrent_ = (uint8_t) volumeCurrentF_;
+                volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
 
-            // After the sprite has passed by completely...
-            if (titlePosX_ < -titleTextWidth_) {
-                titlePosX_ = M5.Lcd.width(); // ...let the sprite start again at the right side of the screen 
+                M5.Lcd.setTextFont(1);
+                M5.Lcd.setTextSize(1);
+                M5.Lcd.setCursor(3, M5.Lcd.height() - M5.Lcd.fontHeight() - 3);
+                M5.Lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+                M5.Lcd.printf("Vol: %2u", volumeCurrent_);
             }
         }
 
-        vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
+        if (connectionError_) {
+            stationSprite_.fillSprite(TFT_RED);
+            stationSprite_.setTextColor(TFT_WHITE);
+            stationSprite_.setCursor(4, 0);
+            stationSprite_.print("Stream unavailable");
+            stationSprite_.pushSprite(0, 2); // Render sprite to screen
+
+            vTaskDelay(200 / portTICK_PERIOD_MS); // Wait until next cycle
+        }
+        else {
+            // Update the station name if flag is raised
+            if (stationUpdatedFlag_) {
+                stationSprite_.fillSprite(TFT_BLACK);
+                stationSprite_.setTextColor(TFT_ORANGE);
+                stationSprite_.setCursor(4, 0);
+                stationSprite_.print(stationStr_);
+
+                stationUpdatedFlag_ = false; // Clear update flag
+
+                stationSprite_.pushSprite(0, 2); // Render sprite to screen
+            }
+
+            // Update the song title if flag is raised
+            if (titleUpdatedFlag_) {
+                titleSprite_.fillSprite(TFT_BLACK);
+                titleSprite_.pushSprite(0, 40); // Wipe out the previous title from the screen
+
+                titleSprite_.setCursor(0, 0);
+                titleSprite_.print(titleStr_);
+
+                titlePosX_ = M5.Lcd.width(); // Start scrolling at right side of screen
+                titleTextWidth_ = min( titleSprite_.textWidth(titleStr_), kTitleSpriteWidth ); // width of the title required for scrolling
+
+                titleUpdatedFlag_ = false; // Clear update flag
+            }
+            else {
+                titlePosX_-= 1; // Move sprite one pixel to the left
+                titleSprite_.pushSprite(titlePosX_, 40); // Render sprite to screen
+
+                // After the sprite has passed by completely...
+                if (titlePosX_ < -titleTextWidth_) {
+                    titlePosX_ = M5.Lcd.width(); // ...let the sprite start again at the right side of the screen 
+                }
+            }
+
+            vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
+        }
     }
 
 }
