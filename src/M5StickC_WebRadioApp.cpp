@@ -246,6 +246,13 @@ void setup() {
     M5.Lcd.println(" Connected to WiFi");
     M5.Lcd.printf(" IP: %s", WiFi.localIP().toString().c_str());
 
+        i2s_pin_config_t my_pin_config = {
+        .bck_io_num = kPinI2S_BCLK,
+        .ws_io_num = kPinI2S_LRCK,
+        .data_out_num = kPinI2S_SD,
+        .data_in_num = I2S_PIN_NO_CHANGE
+    };
+
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
     stationSprite_.setTextSize(2);
@@ -269,13 +276,16 @@ void setup() {
     */
 
     // Start the audio processing task
-    xTaskCreate(audioProcessing, "Audio processing task", 4096, nullptr, configMAX_PRIORITIES - 1, nullptr);
+    xTaskCreate(audioProcessing, "Audio processing task", 4096, nullptr, configMAX_PRIORITIES - 4, nullptr);
 
     // Wait some time before wiping out the startup screen
     vTaskDelay(2000 / portTICK_PERIOD_MS);
 
     M5.Lcd.fillScreen(TFT_BLACK);
     M5.Axp.ScreenBreath(9);
+
+    //a2dp_.set_pin_config(my_pin_config);
+    //a2dp_.start(kDeviceName);
 }
 
 void loop() {
@@ -289,16 +299,6 @@ void loop() {
             vTaskDelay(100 / portTICK_PERIOD_MS);
             
             audio_.stopSong();
-
-            i2s_pin_config_t my_pin_config = {
-                .bck_io_num = kPinI2S_BCLK,
-                .ws_io_num = kPinI2S_LRCK,
-                .data_out_num = kPinI2S_SD,
-                .data_in_num = I2S_PIN_NO_CHANGE
-            };
-
-            a2dp_.set_pin_config(my_pin_config);
-            a2dp_.start(kDeviceName);
         }
     }
 
