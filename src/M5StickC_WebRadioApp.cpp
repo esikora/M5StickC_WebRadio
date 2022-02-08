@@ -48,9 +48,10 @@ Audio *pAudio_ = nullptr;
 TaskHandle_t pAudioTask_ = nullptr;
 
 /**
- * Pointer to instance of the 'BluetoothA2DPSink' class from the 'ESP32-A2DP' library.
+ * Instance of the 'BluetoothA2DPSink' class from the 'ESP32-A2DP' library.
+ * Using a pointer and dynamic creation of the instance causes the ESP32 to crash when a2dp_.start() is called.
  */ 
-BluetoothA2DPSink *pA2dp_ = nullptr;
+BluetoothA2DPSink a2dp_ = BluetoothA2DPSink();
 
 enum DeviceMode {NONE = 0, RADIO = 1, A2DP = 2};
 typedef enum DeviceMode t_DeviceMode;
@@ -227,39 +228,23 @@ void stopRadio() {
 void startA2dp() {
     log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-    if (pA2dp_ == nullptr) {
-        i2s_pin_config_t pinConfig = {
-            .bck_io_num = kPinI2S_BCLK,
-            .ws_io_num = kPinI2S_LRCK,
-            .data_out_num = kPinI2S_SD,
-            .data_in_num = I2S_PIN_NO_CHANGE
-        };
+    i2s_pin_config_t pinConfig = {
+        .bck_io_num = kPinI2S_BCLK,
+        .ws_io_num = kPinI2S_LRCK,
+        .data_out_num = kPinI2S_SD,
+        .data_in_num = I2S_PIN_NO_CHANGE
+    };
 
-        pA2dp_ = new BluetoothA2DPSink();
+    a2dp_.set_pin_config(pinConfig);
+    a2dp_.start(kDeviceName);
 
-        pA2dp_->set_pin_config(pinConfig);
-        pA2dp_->start(kDeviceName);
-
-        deviceMode_ = A2DP;
-    }
-    else {
-        log_w("'pA2dp_' not cleaned up!");
-    }
+    deviceMode_ = A2DP;
 
     log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
 }
 
 void stopA2dp() {
-    if (pA2dp_ != nullptr) {
-        deviceMode_ = NONE;
-
-        delete pA2dp_;
-
-        pA2dp_ = nullptr;
-    }
-    else {
-        log_w("Cannot clean up 'pA2dp_'!");
-    }
+    log_w("Not possible to stop and cleanup 'a2dp_'!");
 }
 
 /**
