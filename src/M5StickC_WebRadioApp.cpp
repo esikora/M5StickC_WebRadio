@@ -3,12 +3,13 @@
 #include "Audio.h"
 #include "WifiCredentials.h"
 #include "BluetoothA2DPSink.h"
+#include <EEPROM.h>
 
 const uint8_t kPinI2S_BCLK = GPIO_NUM_0; // yellow (PCM5102A board: BCK)
 const uint8_t kPinI2S_LRCK = GPIO_NUM_26; // brown (PCM5102A board: LRCK)
 const uint8_t kPinI2S_SD = GPIO_NUM_25; // green (PCM5102A board: DIN)
 
-// Own host name announced to the WiFi network
+// Own host name announced to the WiFi / Bluetooth network
 const char* kDeviceName = "ESP32-Webradio";
 
 /** Maximum audio volume that can be set in the 'esp32-audioI2S' library */
@@ -38,11 +39,24 @@ const uint8_t kNumStations = sizeof(kStationURLs) / sizeof(kStationURLs[0]);
 //Audio audio_ = Audio(true); // Use internal DAC channel 2 with output to GPIO_26
 
 /**
- * Instance of 'Audio' class from 'esp32-audioI2S' library for external DAC PCM5102A
+ * Pointer tp instance of 'Audio' class from 'esp32-audioI2S' library for external DAC PCM5102A.
  * 
  * Constructor: Audio(bool internalDAC = false, i2s_dac_mode_t channelEnabled = I2S_DAC_CHANNEL_LEFT_EN);
  */
-Audio audio_ = Audio(false); // Use external DAC
+Audio *pAudio_ = nullptr;
+
+TaskHandle_t pAudioTask_ = nullptr;
+
+/**
+ * Pointer to instance of the 'BluetoothA2DPSink' class from the 'ESP32-A2DP' library.
+ */ 
+BluetoothA2DPSink *pA2dp_ = nullptr;
+
+enum DeviceMode {NONE = 0, RADIO = 1, A2DP = 2};
+typedef enum DeviceMode t_DeviceMode;
+
+t_DeviceMode deviceMode_ = RADIO;
+
 
 // Content in audio buffer (provided by esp32-audioI2S library)
 uint32_t audioBufferFilled_ = 0;
@@ -101,15 +115,152 @@ uint8_t volumeNormal_ = kVolumeMax;
 // Time in milliseconds at which the connection to the chosen stream has been established
 uint64_t timeConnect_ = 0;
 
-/**
- * Instance of the 'BluetoothA2DPSink' class from the 'ESP32-A2DP' library.
- */ 
-BluetoothA2DPSink a2dp_;
 
-enum DeviceMode {RADIO = 0, A2DP = 1};
-typedef enum DeviceMode t_DeviceMode;
+void audioProcessing(void *p);
 
-t_DeviceMode deviceMode_ = RADIO;
+void startRadio() {
+    log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    if (pAudio_ == nullptr) {
+        // Show some information on the startup screen
+        M5.Lcd.fillScreen(TFT_BLACK);
+        M5.Lcd.setTextFont(4);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setTextColor(TFT_MAGENTA);
+            
+        M5.Lcd.setCursor(0, 10);
+        M5.Lcd.println(" Hello!");
+
+        M5.Lcd.setTextFont(2);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setTextColor(TFT_DARKGREY);
+        
+        M5.Lcd.setCursor(0, 40);
+        M5.Lcd.printf(" Host: %s\n", kDeviceName); // Own host name
+        M5.Lcd.printf(" MAC: %s\n", WiFi.macAddress().c_str()); // Own network mac address
+
+        M5.Lcd.println(" Connecting to WiFi...");
+        M5.Lcd.printf(" SSID: %s\n", WifiCredentials::SSID); // WiFi network name
+
+        // Initialize WiFi and connect to network
+        WiFi.mode(WIFI_STA);
+        WiFi.setHostname(kDeviceName);
+        WiFi.begin(WifiCredentials::SSID, WifiCredentials::PASSWORD);
+
+        while (!WiFi.isConnected()) {
+            delay(100);
+        }
+
+        // Display own IP address after connecting
+        M5.Lcd.println(" Connected to WiFi");
+        M5.Lcd.printf(" IP: %s", WiFi.localIP().toString().c_str());
+
+        pAudio_ = new Audio(false); // Use external DAC
+
+        // Setup audio
+        pAudio_->setVolume(0); // 0...21
+        pAudio_->setPinout(kPinI2S_BCLK, kPinI2S_LRCK, kPinI2S_SD);
+
+        deviceMode_ = RADIO;
+
+        // Start the audio processing task
+        xTaskCreate(audioProcessing, "Audio processing task", 4096, nullptr, configMAX_PRIORITIES - 4, &pAudioTask_);
+
+        // Wait some time before wiping out the startup screen
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+        M5.Lcd.fillScreen(TFT_BLACK);
+    }
+    else {
+        log_w("'pAudio_' not cleaned up!");
+    }
+
+    log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
+}
+
+void stopRadio() {
+    log_d("Begin : free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
+    if (pAudio_ != nullptr) {
+        deviceMode_ = NONE;
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        if (pAudioTask_ != nullptr) {
+            vTaskDelete(pAudioTask_);
+            pAudioTask_ = nullptr;
+        }
+        else {
+            log_w("Cannot clean up 'pAudioTask_'!");
+        }
+
+        pAudio_->stopSong();
+
+        delete pAudio_;
+
+        pAudio_ = nullptr;
+
+        // Set variables to default values
+        audioBufferFilled_ = 0;
+        audioBufferSize_ = 0;
+        // stationIndex_ = 0;
+        stationChanged_ = true;
+        stationChangedMute_ = true;
+        String stationStr_ = "";
+        stationUpdatedFlag_ = false;
+        connectionError_ = false;
+        titleStr_ = "";
+        titleUpdatedFlag_ = false;
+        titleTextWidth_ = 0;
+        titlePosX_ = M5.Lcd.width();
+        volumeCurrent_ = 0;
+        volumeCurrentF_ = 0.0f;
+        volumeCurrentChangedFlag_ = true;
+
+        M5.Lcd.fillScreen(TFT_BLACK);
+    }
+    else {
+        log_w("Cannot clean up 'pAudio_'!");
+    }
+
+    log_d("End: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+}
+
+void startA2dp() {
+    log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
+    if (pA2dp_ == nullptr) {
+        i2s_pin_config_t pinConfig = {
+            .bck_io_num = kPinI2S_BCLK,
+            .ws_io_num = kPinI2S_LRCK,
+            .data_out_num = kPinI2S_SD,
+            .data_in_num = I2S_PIN_NO_CHANGE
+        };
+
+        pA2dp_ = new BluetoothA2DPSink();
+
+        pA2dp_->set_pin_config(pinConfig);
+        pA2dp_->start(kDeviceName);
+
+        deviceMode_ = A2DP;
+    }
+    else {
+        log_w("'pA2dp_' not cleaned up!");
+    }
+
+    log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
+}
+
+void stopA2dp() {
+    if (pA2dp_ != nullptr) {
+        deviceMode_ = NONE;
+
+        delete pA2dp_;
+
+        pA2dp_ = nullptr;
+    }
+    else {
+        log_w("Cannot clean up 'pA2dp_'!");
+    }
+}
 
 /**
  * Enable or disable the shutdown circuit of the amplifier.
@@ -134,26 +285,26 @@ void setAudioShutdown(bool b) {
 void audioProcessing(void *p) {
     while (true) {
         if (deviceMode_ != RADIO) {
-            vTaskDelay(100 / portTICK_PERIOD_MS);
+            vTaskDelay(200 / portTICK_PERIOD_MS);
             continue;
         }
 
         // Process requested change of audio volume
         if (volumeCurrentChangedFlag_) {
-            audio_.setVolume(volumeCurrent_);
+            pAudio_->setVolume(volumeCurrent_);
             volumeCurrentChangedFlag_ = false; // Clear flag
         }
         
         // Proces requested station change
         if (stationChanged_) {
-            audio_.stopSong();
+            pAudio_->stopSong();
             setAudioShutdown(true); // Turn off amplifier
             stationChangedMute_ = true; // Mute audio until stream becomes stable
 
             // Establish HTTP connection to requested stream URL
             const char *streamUrl = kStationURLs[stationIndex_].c_str();
 
-            bool success = audio_.connecttohost( streamUrl );
+            bool success = pAudio_->connecttohost( streamUrl );
 
             if (success) {
                 stationChanged_ = false; // Clear flag
@@ -167,8 +318,8 @@ void audioProcessing(void *p) {
             }
 
             // Update buffer state variables
-            audioBufferFilled_ = audio_.inBufferFilled(); // 0 after connecting
-            audioBufferSize_ = audio_.inBufferFree() + audioBufferFilled_;
+            audioBufferFilled_ = pAudio_->inBufferFilled(); // 0 after connecting
+            audioBufferSize_ = pAudio_->inBufferFree() + audioBufferFilled_;
         }
 
         // After the buffer has been filled up sufficiently enable audio output
@@ -190,9 +341,9 @@ void audioProcessing(void *p) {
         }
 
         // Let 'esp32-audioI2S' library process the web radio stream data
-        audio_.loop();
+        pAudio_->loop();
 
-        audioBufferFilled_ = audio_.inBufferFilled(); // Update used buffer capacity
+        audioBufferFilled_ = pAudio_->inBufferFilled(); // Update used buffer capacity
         
         vTaskDelay(1 / portTICK_PERIOD_MS); // Let other tasks execute
     }
@@ -209,49 +360,32 @@ void setup() {
     //dac_output_voltage(DAC_CHANNEL_2, 0);
     */
 
+    log_d("IDF version = %s", ESP.getSdkVersion());
+    log_d("Total heap = %d", ESP.getHeapSize());
+    log_d("Free heap = %d", ESP.getFreeHeap());
+    log_d("Max alloc heap = %d", ESP.getMaxAllocHeap());
+    
+    if ( EEPROM.begin(1) ) {
+        uint8_t mode = EEPROM.readByte(0);
+
+        log_d("EEPROM.readByte(0) = %d", mode);
+
+        if (mode == 2) {
+            startA2dp();
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
+        else {
+            startRadio();
+        }
+    }
+    else {
+        log_w("EEPROM.begin() returned 'false'!");
+        startRadio();
+    }
+
     // Initialize M5StickC
     M5.begin();
     M5.Lcd.setRotation(3);
-
-    // Show some information on the startup screen
-    M5.Lcd.fillScreen(TFT_BLACK);
-    M5.Lcd.setTextFont(4);
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(TFT_MAGENTA);
-        
-    M5.Lcd.setCursor(0, 10);
-    M5.Lcd.println(" Hello!");
-
-    M5.Lcd.setTextFont(2);
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(TFT_DARKGREY);
-    
-    M5.Lcd.setCursor(0, 40);
-    M5.Lcd.printf(" Host: %s\n", kDeviceName); // Own host name
-    M5.Lcd.printf(" MAC: %s\n", WiFi.macAddress().c_str()); // Own network mac address
-
-    M5.Lcd.println(" Connecting to WiFi...");
-    M5.Lcd.printf(" SSID: %s\n", WifiCredentials::SSID); // WiFi network name
-
-    // Initialize WiFi and connect to network
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname(kDeviceName);
-    WiFi.begin(WifiCredentials::SSID, WifiCredentials::PASSWORD);
-
-    while (!WiFi.isConnected()) {
-        delay(100);
-    }
-
-    // Display own IP address after connecting
-    M5.Lcd.println(" Connected to WiFi");
-    M5.Lcd.printf(" IP: %s", WiFi.localIP().toString().c_str());
-
-        i2s_pin_config_t my_pin_config = {
-        .bck_io_num = kPinI2S_BCLK,
-        .ws_io_num = kPinI2S_LRCK,
-        .data_out_num = kPinI2S_SD,
-        .data_in_num = I2S_PIN_NO_CHANGE
-    };
 
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
@@ -267,25 +401,7 @@ void setup() {
     titleSprite_.setTextWrap(false);
     titleSprite_.createSprite(kTitleSpriteWidth, titleSprite_.fontHeight());
 
-    // Setup audio
-    audio_.setVolume(0); // 0...21
-    audio_.setPinout(kPinI2S_BCLK, kPinI2S_LRCK, kPinI2S_SD);
-
-    /*
-    audio_.forceMono(true); // mono sound on SPK hat
-    */
-
-    // Start the audio processing task
-    xTaskCreate(audioProcessing, "Audio processing task", 4096, nullptr, configMAX_PRIORITIES - 4, nullptr);
-
-    // Wait some time before wiping out the startup screen
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-
-    M5.Lcd.fillScreen(TFT_BLACK);
     M5.Axp.ScreenBreath(9);
-
-    //a2dp_.set_pin_config(my_pin_config);
-    //a2dp_.start(kDeviceName);
 }
 
 void loop() {
@@ -294,12 +410,14 @@ void loop() {
 
     if (M5.BtnB.wasPressed()) {
         if (deviceMode_ == RADIO) {
-            deviceMode_ = A2DP;
-
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            
-            audio_.stopSong();
+            EEPROM.writeByte(0, 2);
+            EEPROM.commit();
         }
+        else {
+            EEPROM.writeByte(0, 1);
+            EEPROM.commit();
+        }
+        ESP.restart();
     }
 
     if (deviceMode_ == RADIO) {
@@ -387,7 +505,10 @@ void loop() {
             vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
         }
     }
-
+    else {
+        // Not in radio mode
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+    }
 }
 
 // optional
