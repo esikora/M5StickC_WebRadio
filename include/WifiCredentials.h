@@ -1,5 +1,5 @@
 class WifiCredentials {
     public:
-        static char *SSID;
-        static char *PASSWORD;
+        const static char *SSID;
+        const static char *PASSWORD;
 };
