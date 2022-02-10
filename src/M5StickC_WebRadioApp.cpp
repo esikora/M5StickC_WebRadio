@@ -86,11 +86,17 @@ bool connectionError_ = false;
 // Sprite for rendering the station name on the display
 TFT_eSprite stationSprite_ = TFT_eSprite(&M5.Lcd);
 
-// Title of the current song as provided by the stream meta data
+// Info about current song as provided by the stream meta data or from AVRC data
+String infoStr_ = "";
+
+// Song artist provided by AVRC data (bluetooth)
+String artistStr_ = "";
+
+// Song title provided by AVRC data (bluetooth)
 String titleStr_ = "";
 
 // Flag indicating the song title has changed
-bool titleUpdatedFlag_ = false;
+bool infoUpdatedFlag_ = false;
 
 // Sprite for rendering the song title on the screen
 TFT_eSprite titleSprite_ = TFT_eSprite(&M5.Lcd);
@@ -119,24 +125,97 @@ uint64_t timeConnect_ = 0;
 
 void audioProcessing(void *p);
 
+void avrc_metadata_callback(uint8_t id, const uint8_t *text);
+
+void avrc_volume_change_callback(int vol);
+
+void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*);
+
+void showWelcomeMessage() {
+    // Show some information on the startup screen
+    M5.Lcd.fillScreen(TFT_BLACK);
+    M5.Lcd.setTextFont(4);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(TFT_MAGENTA);
+        
+    M5.Lcd.setCursor(0, 10);
+    M5.Lcd.println(" Hello!");
+
+    M5.Lcd.setTextFont(2);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(TFT_DARKGREY);
+    
+    M5.Lcd.setCursor(0, 40);
+    M5.Lcd.printf(" Host: %s\n", kDeviceName); // Own host name
+}
+
+void showStation() {
+    stationSprite_.fillSprite(TFT_BLACK);
+
+    if (deviceMode_ == RADIO) {
+        stationSprite_.setTextColor(TFT_ORANGE);
+    }
+    else {
+        stationSprite_.setTextColor(TFT_BLUE);
+    }
+    
+    stationSprite_.setCursor(4, 0);
+    stationSprite_.print(stationStr_);
+    stationSprite_.pushSprite(0, 2); // Render sprite to screen
+}
+
+void showSongInfo() {
+    // Update the song title if flag is raised
+    if (infoUpdatedFlag_) {
+        titleSprite_.fillSprite(TFT_BLACK);
+        titleSprite_.pushSprite(0, 40); // Wipe out the previous title from the screen
+
+        titleSprite_.setCursor(0, 0);
+        titleSprite_.print(infoStr_);
+
+        titlePosX_ = M5.Lcd.width(); // Start scrolling at right side of screen
+        titleTextWidth_ = min( titleSprite_.textWidth(infoStr_), kTitleSpriteWidth ); // width of the title required for scrolling
+
+        infoUpdatedFlag_ = false; // Clear update flag
+    }
+    else {
+        titlePosX_-= 1; // Move sprite one pixel to the left
+        titleSprite_.pushSprite(titlePosX_, 40); // Render sprite to screen
+
+        // After the sprite has passed by completely...
+        if (titlePosX_ < -titleTextWidth_) {
+            titlePosX_ = M5.Lcd.width(); // ...let the sprite start again at the right side of the screen 
+        }
+    }
+}
+
+void showVolume(uint8_t volume) {
+    M5.Lcd.setTextFont(1);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(3, M5.Lcd.height() - M5.Lcd.fontHeight() - 3);
+    M5.Lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    M5.Lcd.printf("Vol: %03u", volume);
+}
+
+void showPlayState(bool isPlaying) {
+    M5.Lcd.setTextFont(1);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor( (M5.Lcd.width() - M5.Lcd.textWidth("1234567")) / 2, M5.Lcd.height() - M5.Lcd.fontHeight() - 3);
+
+    if (isPlaying) {
+        M5.Lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+        M5.Lcd.print("Playing");
+    }
+    else {
+        M5.Lcd.setTextColor(TFT_YELLOW, TFT_BLACK);
+        M5.Lcd.print("Stopped");
+    }
+}
+
 void startRadio() {
     log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     if (pAudio_ == nullptr) {
-        // Show some information on the startup screen
-        M5.Lcd.fillScreen(TFT_BLACK);
-        M5.Lcd.setTextFont(4);
-        M5.Lcd.setTextSize(1);
-        M5.Lcd.setTextColor(TFT_MAGENTA);
-            
-        M5.Lcd.setCursor(0, 10);
-        M5.Lcd.println(" Hello!");
-
-        M5.Lcd.setTextFont(2);
-        M5.Lcd.setTextSize(1);
-        M5.Lcd.setTextColor(TFT_DARKGREY);
-        
-        M5.Lcd.setCursor(0, 40);
-        M5.Lcd.printf(" Host: %s\n", kDeviceName); // Own host name
+        showWelcomeMessage();
         M5.Lcd.printf(" MAC: %s\n", WiFi.macAddress().c_str()); // Own network mac address
 
         M5.Lcd.println(" Connecting to WiFi...");
@@ -208,8 +287,8 @@ void stopRadio() {
         String stationStr_ = "";
         stationUpdatedFlag_ = false;
         connectionError_ = false;
-        titleStr_ = "";
-        titleUpdatedFlag_ = false;
+        infoStr_ = "";
+        infoUpdatedFlag_ = false;
         titleTextWidth_ = 0;
         titlePosX_ = M5.Lcd.width();
         volumeCurrent_ = 0;
@@ -236,9 +315,33 @@ void startA2dp() {
     };
 
     a2dp_.set_pin_config(pinConfig);
-    a2dp_.start(kDeviceName);
 
+    a2dp_.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST);
+    a2dp_.set_avrc_metadata_callback(avrc_metadata_callback);
+    //a2dp_.set_on_connection_state_changed(a2dp_connection_state_changed);
+    //a2dp_.set_on_volumechange(avrc_volume_change_callback);
+
+    showWelcomeMessage();
+    M5.Lcd.println(" Starting bluetooth");
+
+    a2dp_.start(kDeviceName);
     deviceMode_ = A2DP;
+    
+    esp_bt_controller_status_t btStatus = esp_bt_controller_get_status();
+
+    if (btStatus == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        M5.Lcd.println(" Ok");
+    }
+    else {
+        M5.Lcd.printf(" Error (%d)\n", (uint8_t) btStatus);
+    }
+
+    stationStr_ = "Bluetooth";
+    stationUpdatedFlag_ = true;
+
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+    M5.Lcd.fillScreen(TFT_BLACK);
 
     log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
 }
@@ -349,6 +452,10 @@ void setup() {
     log_d("Total heap = %d", ESP.getHeapSize());
     log_d("Free heap = %d", ESP.getFreeHeap());
     log_d("Max alloc heap = %d", ESP.getMaxAllocHeap());
+
+    // Initialize M5StickC
+    M5.begin();
+    M5.Lcd.setRotation(3);
     
     if ( EEPROM.begin(1) ) {
         uint8_t mode = EEPROM.readByte(0);
@@ -357,7 +464,6 @@ void setup() {
 
         if (mode == 2) {
             startA2dp();
-            vTaskDelay(100 / portTICK_PERIOD_MS);
         }
         else {
             startRadio();
@@ -367,10 +473,6 @@ void setup() {
         log_w("EEPROM.begin() returned 'false'!");
         startRadio();
     }
-
-    // Initialize M5StickC
-    M5.begin();
-    M5.Lcd.setRotation(3);
 
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
@@ -395,11 +497,13 @@ void loop() {
 
     if (M5.BtnB.wasPressed()) {
         if (deviceMode_ == RADIO) {
-            EEPROM.writeByte(0, 2);
+            EEPROM.writeByte(0, 2); // Enter A2DP mode after restart
             EEPROM.commit();
+
+            stopRadio(); // Close connections and clean up
         }
         else {
-            EEPROM.writeByte(0, 1);
+            EEPROM.writeByte(0, 1); // Enter internet radio mode after restart
             EEPROM.commit();
         }
         ESP.restart();
@@ -424,8 +528,8 @@ void loop() {
             stationUpdatedFlag_ = true; // Raise flag for display update routine
 
             // Erase stream info
-            titleStr_ = "";
-            titleUpdatedFlag_ = true; // Raise flag for display update routine
+            infoStr_ = "";
+            infoUpdatedFlag_ = true; // Raise flag for display update routine
         }
         else {
             // Increase volume gradually after station change
@@ -434,11 +538,7 @@ void loop() {
                 volumeCurrent_ = (uint8_t) volumeCurrentF_;
                 volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
 
-                M5.Lcd.setTextFont(1);
-                M5.Lcd.setTextSize(1);
-                M5.Lcd.setCursor(3, M5.Lcd.height() - M5.Lcd.fontHeight() - 3);
-                M5.Lcd.setTextColor(TFT_GREEN, TFT_BLACK);
-                M5.Lcd.printf("Vol: %2u", volumeCurrent_);
+                showVolume(volumeCurrent_);
             }
         }
 
@@ -454,45 +554,35 @@ void loop() {
         else {
             // Update the station name if flag is raised
             if (stationUpdatedFlag_) {
-                stationSprite_.fillSprite(TFT_BLACK);
-                stationSprite_.setTextColor(TFT_ORANGE);
-                stationSprite_.setCursor(4, 0);
-                stationSprite_.print(stationStr_);
-
+                showStation();
                 stationUpdatedFlag_ = false; // Clear update flag
-
-                stationSprite_.pushSprite(0, 2); // Render sprite to screen
             }
 
-            // Update the song title if flag is raised
-            if (titleUpdatedFlag_) {
-                titleSprite_.fillSprite(TFT_BLACK);
-                titleSprite_.pushSprite(0, 40); // Wipe out the previous title from the screen
-
-                titleSprite_.setCursor(0, 0);
-                titleSprite_.print(titleStr_);
-
-                titlePosX_ = M5.Lcd.width(); // Start scrolling at right side of screen
-                titleTextWidth_ = min( titleSprite_.textWidth(titleStr_), kTitleSpriteWidth ); // width of the title required for scrolling
-
-                titleUpdatedFlag_ = false; // Clear update flag
-            }
-            else {
-                titlePosX_-= 1; // Move sprite one pixel to the left
-                titleSprite_.pushSprite(titlePosX_, 40); // Render sprite to screen
-
-                // After the sprite has passed by completely...
-                if (titlePosX_ < -titleTextWidth_) {
-                    titlePosX_ = M5.Lcd.width(); // ...let the sprite start again at the right side of the screen 
-                }
-            }
-
+            showSongInfo();
             vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
         }
     }
     else {
-        // Not in radio mode
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        if (deviceMode_ == A2DP) {
+            // Update the station name if flag is raised
+            if (stationUpdatedFlag_) {
+                showStation();
+                stationUpdatedFlag_ = false; // Clear update flag
+            }
+
+            showSongInfo();
+
+            /*if (volumeCurrentChangedFlag_) {
+                showVolume(volumeCurrent_);
+            }*/
+            
+            showPlayState(a2dp_.get_audio_state() == ESP_A2D_AUDIO_STATE_STARTED);
+            vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
+        }
+        else {
+            // Neither radio mode nor A2DP mode
+            vTaskDelay(200 / portTICK_PERIOD_MS);
+        }
     }
 }
 
@@ -513,8 +603,8 @@ void audio_showstation(const char *info){
     // Serial.print("station     ");Serial.println(info);
 }
 void audio_showstreamtitle(const char *info){
-    titleStr_ = info;
-    titleUpdatedFlag_ = true; // Raise flag for the display update routine
+    infoStr_ = info;
+    infoUpdatedFlag_ = true; // Raise flag for the display update routine
 
     // Serial.print("streamtitle ");Serial.println(info);
 }
@@ -532,4 +622,46 @@ void audio_lasthost(const char *info){  //stream URL played
 }
 void audio_eof_speech(const char *info){
     // Serial.print("eof_speech  ");Serial.println(info);
+}
+
+void avrc_metadata_callback(uint8_t id, const uint8_t *text) {
+    switch (id) {
+        case ESP_AVRC_MD_ATTR_TITLE:
+            titleStr_ = (char*) text;
+            break;
+        
+        case ESP_AVRC_MD_ATTR_ARTIST:
+            artistStr_ = (char*) text;
+            break;
+    }    
+
+    if ( artistStr_.isEmpty() ) {
+        infoStr_ = titleStr_;
+    }
+    else {
+        if ( titleStr_.isEmpty() ) {
+            infoStr_ = artistStr_;
+        }
+        else {
+            infoStr_ = artistStr_ + " - " + titleStr_;
+        }
+    }
+    
+    infoUpdatedFlag_ = true; // Raise flag for the display update routine
+    // Serial.printf("==> AVRC metadata rsp: attribute id 0x%x, %s\n", id, text);
+}
+
+void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*) {
+
+    log_d("Connection state: %d", state);
+
+    if (state != ESP_A2D_CONNECTION_STATE_CONNECTED) {
+        infoStr_ = "not connected";
+        infoUpdatedFlag_ = true; // Raise flag for the display update routine
+    }
+}
+
+void avrc_volume_change_callback(int vol) {
+    volumeCurrent_ = vol;
+    volumeCurrentChangedFlag_ = true;
 }
