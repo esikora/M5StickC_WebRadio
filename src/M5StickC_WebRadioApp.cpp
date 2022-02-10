@@ -67,10 +67,14 @@ typedef enum DeviceMode t_DeviceMode;
 // Current device mode (initialization as 'RADIO')
 t_DeviceMode deviceMode_ = RADIO;
 
+<<<<<<< HEAD
 // Button object for red button
 Button buttonRed = Button(kPinButtonRed, false, 40);
 
 // Button object for blue button
+=======
+Button buttonRed = Button(kPinButtonRed, false, 10);
+>>>>>>> 7710014... Song info can be sent to IFTTT webhook
 Button buttonBlue = Button(kPinButtonBlue, false, 10);
 
 // Content in audio buffer (provided by esp32-audioI2S library)
