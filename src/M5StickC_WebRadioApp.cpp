@@ -4,10 +4,15 @@
 #include "WifiCredentials.h"
 #include "BluetoothA2DPSink.h"
 #include <EEPROM.h>
+#include <HTTPClient.h>
+#include "IftttHook.h"
 
 const uint8_t kPinI2S_BCLK = GPIO_NUM_0; // yellow (PCM5102A board: BCK)
 const uint8_t kPinI2S_LRCK = GPIO_NUM_26; // brown (PCM5102A board: LRCK)
 const uint8_t kPinI2S_SD = GPIO_NUM_25; // green (PCM5102A board: DIN)
+
+const uint8_t kPinButtonRed = GPIO_NUM_32; // dual button unit: red button
+const uint8_t kPinButtonBlue = GPIO_NUM_33; // dual button unit: blue button
 
 // Own host name announced to the WiFi / Bluetooth network
 const char* kDeviceName = "ESP32-Webradio";
@@ -61,6 +66,12 @@ typedef enum DeviceMode t_DeviceMode;
 
 // Current device mode (initialization as 'RADIO')
 t_DeviceMode deviceMode_ = RADIO;
+
+// Button object for red button
+Button buttonRed = Button(kPinButtonRed, false, 40);
+
+// Button object for blue button
+Button buttonBlue = Button(kPinButtonBlue, false, 10);
 
 // Content in audio buffer (provided by esp32-audioI2S library)
 uint32_t audioBufferFilled_ = 0;
@@ -394,6 +405,35 @@ void stopA2dp() {
     log_w("Not possible to stop and cleanup 'a2dp_'!");
 }
 
+void sendTitle() {
+    log_d("Sending title to IFTTT");
+
+    if ( WiFi.status() == WL_CONNECTED ) {
+        HTTPClient http;
+
+        // Your Domain name with URL path or IP address with path
+        http.begin(IftttHook::IFTTT_ADD_SONG);
+        http.addHeader("Content-Type", "application/json");
+
+        String requestBody = "{ \"value1\" : \"" + infoStr_ + "\" }";
+
+        log_d("Request body:\n%s\n", requestBody.c_str());
+
+        int httpResponseCode = http.POST(requestBody);
+
+        if (httpResponseCode > 0) {
+       
+            String response = http.getString();                       
+            
+            log_d("HTTP response code: %d", httpResponseCode);   
+            log_v("HTTP response:\n%s\n", response.c_str());
+        }
+        else {
+            log_w("Error occurred while sending HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
+        }
+    }
+}
+
 /**
  * Enable or disable the shutdown circuit of the amplifier.
  * Amplifier: M5Stack SPK hat with PAM8303.
@@ -535,6 +575,8 @@ void setup() {
 void loop() {
     // Let M5StickC update its state
     M5.update();
+    buttonBlue.read();
+    buttonRed.read();
 
     if (M5.BtnB.wasPressed()) {
         if (deviceMode_ == RADIO) {
@@ -601,6 +643,10 @@ void loop() {
 
             showSongInfo();
             vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
+        }
+
+        if (buttonBlue.wasPressed()) {
+            sendTitle();
         }
     }
     else {
