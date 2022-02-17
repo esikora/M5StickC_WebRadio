@@ -45,6 +45,7 @@ const uint8_t kNumStations = sizeof(kStationURLs) / sizeof(kStationURLs[0]);
  */
 Audio *pAudio_ = nullptr;
 
+// Handle to the RTOS audio task
 TaskHandle_t pAudioTask_ = nullptr;
 
 /**
@@ -53,11 +54,13 @@ TaskHandle_t pAudioTask_ = nullptr;
  */ 
 BluetoothA2DPSink a2dp_ = BluetoothA2DPSink();
 
+// Enumeration with possible device modes
 enum DeviceMode {NONE = 0, RADIO = 1, A2DP = 2};
+
 typedef enum DeviceMode t_DeviceMode;
 
+// Current device mode (initialization as 'RADIO')
 t_DeviceMode deviceMode_ = RADIO;
-
 
 // Content in audio buffer (provided by esp32-audioI2S library)
 uint32_t audioBufferFilled_ = 0;
@@ -122,15 +125,26 @@ uint8_t volumeNormal_ = kVolumeMax;
 // Time in milliseconds at which the connection to the chosen stream has been established
 uint64_t timeConnect_ = 0;
 
-
+/**
+ * Function that is executed by the audio processing task in internet radio mode.
+ */
 void audioProcessing(void *p);
 
+/**
+ * Meta data callback function in bluetooth sink mode.
+ * Creates the song info string from metadata received via AVRC.
+ */
 void avrc_metadata_callback(uint8_t id, const uint8_t *text);
 
+// Forward declaration of the volume change callback in bluetooth sink mode
 void avrc_volume_change_callback(int vol);
 
+// Forward declaration of the connection state change callback in bluetooth sink mode
 void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*);
 
+/**
+ * Shows a welcome message at startup of the device on the TFT display.
+ */
 void showWelcomeMessage() {
     // Show some information on the startup screen
     M5.Lcd.fillScreen(TFT_BLACK);
@@ -149,6 +163,9 @@ void showWelcomeMessage() {
     M5.Lcd.printf(" Host: %s\n", kDeviceName); // Own host name
 }
 
+/**
+ * Displays the current station name contained in 'stationStr_' on the TFT screen.
+ */
 void showStation() {
     stationSprite_.fillSprite(TFT_BLACK);
 
@@ -164,6 +181,10 @@ void showStation() {
     stationSprite_.pushSprite(0, 2); // Render sprite to screen
 }
 
+/**
+ * Displays the current song information contained in 'infoStr_' on the TFT screen.
+ * Each time the song info is updated, it starts scrolling from the right edge.
+ */
 void showSongInfo() {
     // Update the song title if flag is raised
     if (infoUpdatedFlag_) {
@@ -189,6 +210,11 @@ void showSongInfo() {
     }
 }
 
+/**
+ * Displays the volume on the TFT screen.
+ * 
+ * @param volume Volume to be displayed on the TFT screen.
+ */
 void showVolume(uint8_t volume) {
     M5.Lcd.setTextFont(1);
     M5.Lcd.setTextSize(1);
@@ -197,6 +223,11 @@ void showVolume(uint8_t volume) {
     M5.Lcd.printf("Vol: %03u", volume);
 }
 
+/**
+ * Displays the play state on the TFT screen.
+ * 
+ * @param isPlaying true = 'playing', false = 'stopped'
+ */
 void showPlayState(bool isPlaying) {
     M5.Lcd.setTextFont(1);
     M5.Lcd.setTextSize(1);
@@ -212,6 +243,10 @@ void showPlayState(bool isPlaying) {
     }
 }
 
+/**
+ * Connects to the specified WiFi network and starts the device in internet radio mode.
+ * Audio task is started.
+ */
 void startRadio() {
     log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     if (pAudio_ == nullptr) {
@@ -257,6 +292,9 @@ void startRadio() {
     log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
 }
 
+/**
+ * Stops the internet radio including the audio tasks.
+ */
 void stopRadio() {
     log_d("Begin : free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
@@ -304,6 +342,9 @@ void stopRadio() {
     log_d("End: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }
 
+/**
+ * Starts the device in bluetooth sink (A2DP) mode.
+ */
 void startA2dp() {
     log_d("Begin: free heap = %d, max alloc heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
@@ -346,6 +387,9 @@ void startA2dp() {
     log_d("End: free heap = %d, max alloc heap = %d, min free heap = %d", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap());
 }
 
+/**
+ * Currently the API does not support stopping the A2DP mode.
+ */
 void stopA2dp() {
     log_w("Not possible to stop and cleanup 'a2dp_'!");
 }
@@ -367,9 +411,6 @@ void setAudioShutdown(bool b) {
     */
 }
 
-/**
- * Function to be executed by the audio processing task.
- */
 void audioProcessing(void *p) {
     while (true) {
         if (deviceMode_ != RADIO) {
