@@ -28,6 +28,7 @@ const String kStationURLs[] = {
     "http://streams.radiobob.de/bob-national/mp3-192/streams.radiobob.de/",
     "http://stream.rockantenne.de/rockantenne/stream/mp3",
     "http://wdr-wdr2-ruhrgebiet.icecast.wdr.de/wdr/wdr2/ruhrgebiet/mp3/128/stream.mp3",
+    "http://streams.br.de/bayern1obb_2.m3u",
     "http://streams.br.de/bayern3_2.m3u",
     "http://play.antenne.de/antenne.m3u",
     "http://funkhaus-ingolstadt.stream24.net/radio-in.mp3"
@@ -67,15 +68,11 @@ typedef enum DeviceMode t_DeviceMode;
 // Current device mode (initialization as 'RADIO')
 t_DeviceMode deviceMode_ = RADIO;
 
-<<<<<<< HEAD
 // Button object for red button
 Button buttonRed = Button(kPinButtonRed, false, 40);
 
 // Button object for blue button
-=======
-Button buttonRed = Button(kPinButtonRed, false, 10);
->>>>>>> 7710014... Song info can be sent to IFTTT webhook
-Button buttonBlue = Button(kPinButtonBlue, false, 10);
+Button buttonBlue = Button(kPinButtonBlue, false, 40);
 
 // Content in audio buffer (provided by esp32-audioI2S library)
 uint32_t audioBufferFilled_ = 0;
@@ -376,7 +373,7 @@ void startA2dp() {
     a2dp_.set_avrc_metadata_callback(avrc_metadata_callback);
     //a2dp_.set_on_connection_state_changed(a2dp_connection_state_changed);
     //a2dp_.set_on_volumechange(avrc_volume_change_callback);
-
+    
     showWelcomeMessage();
     M5.Lcd.println(" Starting bluetooth");
 
@@ -409,30 +406,39 @@ void stopA2dp() {
     log_w("Not possible to stop and cleanup 'a2dp_'!");
 }
 
+/**
+ * Sends the current content of 'infoStr_' to the IFTTT webhook specified by 'IftttHook::IFTTT_ADD_SONG'.
+ */
 void sendTitle() {
+    String infoIfttt = infoStr_; // Create local copy of current info
+    
+    if (infoIfttt.isEmpty()) { // Prevent sending empty info
+        log_d("Not sending title to IFTTT because it is empty.");
+        return;
+    }
+
     log_d("Sending title to IFTTT");
 
     if ( WiFi.status() == WL_CONNECTED ) {
         HTTPClient http;
 
-        // Your Domain name with URL path or IP address with path
-        http.begin(IftttHook::IFTTT_ADD_SONG);
+        http.begin(IftttHook::IFTTT_ADD_SONG); // pass IFTTT webhook URL to HTTP client
         http.addHeader("Content-Type", "application/json");
 
-        String requestBody = "{ \"value1\" : \"" + infoStr_ + "\" }";
+        String requestBody = "{ \"value1\" : \"" + infoIfttt + "\" }"; // Create json payload
 
         log_d("Request body:\n%s\n", requestBody.c_str());
 
-        int httpResponseCode = http.POST(requestBody);
+        int httpResponseCode = http.POST(requestBody); // Send data using POST method
 
-        if (httpResponseCode > 0) {
+        if (httpResponseCode > 0) { // Success
        
-            String response = http.getString();                       
+            String response = http.getString(); // Retrieve response
             
-            log_d("HTTP response code: %d", httpResponseCode);   
+            log_d("HTTP response code: %d", httpResponseCode);
             log_v("HTTP response:\n%s\n", response.c_str());
         }
-        else {
+        else { // Fail
             log_w("Error occurred while sending HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
         }
     }
@@ -649,7 +655,7 @@ void loop() {
             vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
         }
 
-        if (buttonBlue.wasPressed()) {
+        if (buttonBlue.wasPressed()) { // Send song info to IFTTT webhook after the blue button was pressed
             sendTitle();
         }
     }
