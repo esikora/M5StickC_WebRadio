@@ -565,6 +565,10 @@ void setup() {
         startRadio();
     }
 
+    // Update button state
+    buttonBlue.read();
+    buttonRed.read();
+
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
     stationSprite_.setTextSize(2);
@@ -588,7 +592,7 @@ void loop() {
     buttonBlue.read();
     buttonRed.read();
 
-    if (M5.BtnB.wasPressed()) {
+    if (M5.BtnB.wasReleased()) {
         if (deviceMode_ == RADIO) {
             EEPROM.writeByte(0, 2); // Enter A2DP mode after restart
             EEPROM.commit();
