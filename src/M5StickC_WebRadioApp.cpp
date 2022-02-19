@@ -4,10 +4,15 @@
 #include "WifiCredentials.h"
 #include "BluetoothA2DPSink.h"
 #include <EEPROM.h>
+#include <HTTPClient.h>
+#include "IftttHook.h"
 
 const uint8_t kPinI2S_BCLK = GPIO_NUM_0; // yellow (PCM5102A board: BCK)
 const uint8_t kPinI2S_LRCK = GPIO_NUM_26; // brown (PCM5102A board: LRCK)
 const uint8_t kPinI2S_SD = GPIO_NUM_25; // green (PCM5102A board: DIN)
+
+const uint8_t kPinButtonRed = GPIO_NUM_32; // dual button unit: red button
+const uint8_t kPinButtonBlue = GPIO_NUM_33; // dual button unit: blue button
 
 // Own host name announced to the WiFi / Bluetooth network
 const char* kDeviceName = "ESP32-Webradio";
@@ -23,6 +28,8 @@ const String kStationURLs[] = {
     "http://streams.radiobob.de/bob-national/mp3-192/streams.radiobob.de/",
     "http://stream.rockantenne.de/rockantenne/stream/mp3",
     "http://wdr-wdr2-ruhrgebiet.icecast.wdr.de/wdr/wdr2/ruhrgebiet/mp3/128/stream.mp3",
+    "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2.m3u",
+    "http://streams.br.de/bayern1obb_2.m3u",
     "http://streams.br.de/bayern3_2.m3u",
     "http://play.antenne.de/antenne.m3u",
     "http://funkhaus-ingolstadt.stream24.net/radio-in.mp3"
@@ -61,6 +68,12 @@ typedef enum DeviceMode t_DeviceMode;
 
 // Current device mode (initialization as 'RADIO')
 t_DeviceMode deviceMode_ = RADIO;
+
+// Button object for red button
+Button buttonRed = Button(kPinButtonRed, false, 40);
+
+// Button object for blue button
+Button buttonBlue = Button(kPinButtonBlue, false, 40);
 
 // Content in audio buffer (provided by esp32-audioI2S library)
 uint32_t audioBufferFilled_ = 0;
@@ -361,7 +374,7 @@ void startA2dp() {
     a2dp_.set_avrc_metadata_callback(avrc_metadata_callback);
     //a2dp_.set_on_connection_state_changed(a2dp_connection_state_changed);
     //a2dp_.set_on_volumechange(avrc_volume_change_callback);
-
+    
     showWelcomeMessage();
     M5.Lcd.println(" Starting bluetooth");
 
@@ -392,6 +405,44 @@ void startA2dp() {
  */
 void stopA2dp() {
     log_w("Not possible to stop and cleanup 'a2dp_'!");
+}
+
+/**
+ * Sends the current content of 'infoStr_' to the IFTTT webhook specified by 'IftttHook::IFTTT_ADD_SONG'.
+ */
+void sendTitle() {
+    String infoIfttt = infoStr_; // Create local copy of current info
+    
+    if (infoIfttt.isEmpty()) { // Prevent sending empty info
+        log_d("Not sending title to IFTTT because it is empty.");
+        return;
+    }
+
+    log_d("Sending title to IFTTT");
+
+    if ( WiFi.status() == WL_CONNECTED ) {
+        HTTPClient http;
+
+        http.begin(IftttHook::IFTTT_ADD_SONG); // pass IFTTT webhook URL to HTTP client
+        http.addHeader("Content-Type", "application/json");
+
+        String requestBody = "{ \"value1\" : \"" + infoIfttt + "\" }"; // Create json payload
+
+        log_d("Request body:\n%s\n", requestBody.c_str());
+
+        int httpResponseCode = http.POST(requestBody); // Send data using POST method
+
+        if (httpResponseCode > 0) { // Success
+       
+            String response = http.getString(); // Retrieve response
+            
+            log_d("HTTP response code: %d", httpResponseCode);
+            log_v("HTTP response:\n%s\n", response.c_str());
+        }
+        else { // Fail
+            log_w("Error occurred while sending HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
+        }
+    }
 }
 
 /**
@@ -515,6 +566,10 @@ void setup() {
         startRadio();
     }
 
+    // Update button state
+    buttonBlue.read();
+    buttonRed.read();
+
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
     stationSprite_.setTextSize(2);
@@ -535,8 +590,10 @@ void setup() {
 void loop() {
     // Let M5StickC update its state
     M5.update();
+    buttonBlue.read();
+    buttonRed.read();
 
-    if (M5.BtnB.wasPressed()) {
+    if (M5.BtnB.wasReleased()) {
         if (deviceMode_ == RADIO) {
             EEPROM.writeByte(0, 2); // Enter A2DP mode after restart
             EEPROM.commit();
@@ -601,6 +658,10 @@ void loop() {
 
             showSongInfo();
             vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
+        }
+
+        if (buttonBlue.wasPressed()) { // Send song info to IFTTT webhook after the blue button was pressed
+            sendTitle();
         }
     }
     else {
