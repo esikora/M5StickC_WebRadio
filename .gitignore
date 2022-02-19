@@ -5,3 +5,7 @@
 .vscode/ipch
 *.log
 src/WifiCredentials.cpp
+src/IftttHook.cpp
+lib
+test
+.vscode/extensions.json
