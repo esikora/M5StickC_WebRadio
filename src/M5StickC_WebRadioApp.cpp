@@ -28,6 +28,7 @@ const String kStationURLs[] = {
     "http://streams.radiobob.de/bob-national/mp3-192/streams.radiobob.de/",
     "http://stream.rockantenne.de/rockantenne/stream/mp3",
     "http://wdr-wdr2-ruhrgebiet.icecast.wdr.de/wdr/wdr2/ruhrgebiet/mp3/128/stream.mp3",
+    "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2.m3u",
     "http://streams.br.de/bayern1obb_2.m3u",
     "http://streams.br.de/bayern3_2.m3u",
     "http://play.antenne.de/antenne.m3u",
