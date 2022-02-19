@@ -24,7 +24,7 @@ Audio project based on an M5StickC Plus (ESP32) with I²S digital audio output.
 ## Project Description
 
 A comprehensive description of this project is available at hackster.io:
-- [Part I](https://www.hackster.io/esikora/esp32-internet-radio-with-i-s-dac-a5515c).
+- [Part I](https://www.hackster.io/esikora/esp32-internet-radio-with-i-s-dac-a5515c)
 - [Part II](https://www.hackster.io/esikora/esp32-audio-project-part-ii-bluetooth-receiver-add-on-1b7005)
 
 ## License
