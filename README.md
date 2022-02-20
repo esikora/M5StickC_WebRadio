@@ -27,6 +27,7 @@ Audio project based on an M5StickC Plus (ESP32) with I²S digital audio output:
 - Button A: Change radio station / Resume playing (if paused)
 - Button B: Switch device mode (internet radio, bluetooth A2DP sink)
 - Button Pwr: Pause playing radio station
+- Blue button (dual-button unit): Send current song info to IFTTT webhook
 
 ## Project Description
 
