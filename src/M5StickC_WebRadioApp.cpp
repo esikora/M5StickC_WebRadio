@@ -84,7 +84,7 @@ uint32_t audioBufferSize_ = 0;
 // Current station index
 uint8_t stationIndex_ = 0;
 
-// Flag to indicate the user wants to changed the station
+// Flag to indicate the user wants to change the station
 bool stationChanged_ = true;
 
 // Flag to indicate that audio is muted after tuning to a new station
@@ -94,10 +94,19 @@ bool stationChangedMute_ = true;
 String stationStr_ = "";
 
 // Flag indicating the station name has changed
-bool stationUpdatedFlag_ = false;
+bool stationDisplayFlag_ = false;
 
 // Flag indicating that the connection to a host could not be established
 bool connectionError_ = false;
+
+// Status indicating the user has paused the current radio stream
+bool userStationPause_ = false;
+
+// Flag indicating the userStationPause_ status has changed
+bool userStationPauseChanged_ = false;
+
+// Time at which the state of the power button has been read
+unsigned long pwrBtnCheckTime_ = 0;
 
 // Sprite for rendering the station name on the display
 TFT_eSprite stationSprite_ = TFT_eSprite(&M5.Lcd);
@@ -112,7 +121,7 @@ String artistStr_ = "";
 String titleStr_ = "";
 
 // Flag indicating the song title has changed
-bool infoUpdatedFlag_ = false;
+bool infoDisplayFlag_ = false;
 
 // Sprite for rendering the song title on the screen
 TFT_eSprite titleSprite_ = TFT_eSprite(&M5.Lcd);
@@ -200,7 +209,7 @@ void showStation() {
  */
 void showSongInfo() {
     // Update the song title if flag is raised
-    if (infoUpdatedFlag_) {
+    if (infoDisplayFlag_) {
         titleSprite_.fillSprite(TFT_BLACK);
         titleSprite_.pushSprite(0, 40); // Wipe out the previous title from the screen
 
@@ -210,7 +219,7 @@ void showSongInfo() {
         titlePosX_ = M5.Lcd.width(); // Start scrolling at right side of screen
         titleTextWidth_ = min( titleSprite_.textWidth(infoStr_), kTitleSpriteWidth ); // width of the title required for scrolling
 
-        infoUpdatedFlag_ = false; // Clear update flag
+        infoDisplayFlag_ = false; // Clear update flag
     }
     else {
         titlePosX_-= 1; // Move sprite one pixel to the left
@@ -336,10 +345,10 @@ void stopRadio() {
         stationChanged_ = true;
         stationChangedMute_ = true;
         String stationStr_ = "";
-        stationUpdatedFlag_ = false;
+        stationDisplayFlag_ = false;
         connectionError_ = false;
         infoStr_ = "";
-        infoUpdatedFlag_ = false;
+        infoDisplayFlag_ = false;
         titleTextWidth_ = 0;
         titlePosX_ = M5.Lcd.width();
         volumeCurrent_ = 0;
@@ -391,7 +400,7 @@ void startA2dp() {
     }
 
     stationStr_ = "Bluetooth";
-    stationUpdatedFlag_ = true;
+    stationDisplayFlag_ = true;
 
     vTaskDelay(2000 / portTICK_PERIOD_MS);
 
@@ -462,6 +471,34 @@ void setAudioShutdown(bool b) {
     */
 }
 
+void connectToStation() {
+    // Establish HTTP connection to requested stream URL
+    const char *streamUrl = kStationURLs[stationIndex_].c_str();
+
+    bool success = pAudio_->connecttohost( streamUrl );
+
+    if (success) {
+        stationChanged_ = false; // Clear flag
+        connectionError_ = false; // Clear in case a connection error occured before
+
+        timeConnect_ = millis(); // Store time in order to detect stream errors after connecting
+    }
+    else {
+        stationChanged_ = false; // Clear flag
+        connectionError_ = true; // Raise connection error flag
+    }
+
+    // Update buffer state variables
+    audioBufferFilled_ = pAudio_->inBufferFilled(); // 0 after connecting
+    audioBufferSize_ = pAudio_->inBufferFree() + audioBufferFilled_;
+}
+
+void stopPlaying() {
+    pAudio_->stopSong();
+    setAudioShutdown(true); // Turn off amplifier
+    stationChangedMute_ = true; // Mute audio until stream becomes stable
+}
+
 void audioProcessing(void *p) {
     while (true) {
         if (deviceMode_ != RADIO) {
@@ -477,33 +514,22 @@ void audioProcessing(void *p) {
         
         // Proces requested station change
         if (stationChanged_) {
-            pAudio_->stopSong();
-            setAudioShutdown(true); // Turn off amplifier
-            stationChangedMute_ = true; // Mute audio until stream becomes stable
+            stopPlaying();
+            connectToStation();
+        }
 
-            // Establish HTTP connection to requested stream URL
-            const char *streamUrl = kStationURLs[stationIndex_].c_str();
-
-            bool success = pAudio_->connecttohost( streamUrl );
-
-            if (success) {
-                stationChanged_ = false; // Clear flag
-                connectionError_ = false; // Clear in case a connection error occured before
-
-                timeConnect_ = millis(); // Store time in order to detect stream errors after connecting
+        if (userStationPauseChanged_) {
+            if (userStationPause_) {
+                stopPlaying();
             }
             else {
-                stationChanged_ = false; // Clear flag
-                connectionError_ = true; // Raise connection error flag
+                connectToStation();
             }
-
-            // Update buffer state variables
-            audioBufferFilled_ = pAudio_->inBufferFilled(); // 0 after connecting
-            audioBufferSize_ = pAudio_->inBufferFree() + audioBufferFilled_;
+            userStationPauseChanged_ = false;
         }
 
         // After the buffer has been filled up sufficiently enable audio output
-        if (stationChangedMute_) {
+        if (stationChangedMute_ && !userStationPause_) {
             if ( audioBufferFilled_ > 0.9f * audioBufferSize_) {
                 setAudioShutdown(false);
                 stationChangedMute_ = false;
@@ -569,6 +595,7 @@ void setup() {
     // Update button state
     buttonBlue.read();
     buttonRed.read();
+    M5.Axp.GetBtnPress();
 
     // Initialize sprite for station name
     stationSprite_.setTextFont(1);
@@ -593,6 +620,7 @@ void loop() {
     buttonBlue.read();
     buttonRed.read();
 
+    // Button B: switch mode and reboot device (internet radio <-> a2dp sink)
     if (M5.BtnB.wasReleased()) {
         if (deviceMode_ == RADIO) {
             EEPROM.writeByte(0, 2); // Enter A2DP mode after restart
@@ -607,27 +635,38 @@ void loop() {
         ESP.restart();
     }
 
+    // Is the device mode 'internet radio' ?
     if (deviceMode_ == RADIO) {
 
         // Button A: Switch to next station
         if (M5.BtnA.wasPressed()) {
             
-            // Turn down volume
-            volumeCurrent_ = 0;
-            volumeCurrentF_ = 0.0f;
-            volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
+            if (userStationPause_) {
+                userStationPause_ = false;
+                userStationPauseChanged_ = true;
+            }
+            else {
+                // Turn down volume
+                volumeCurrent_ = 0;
+                volumeCurrentF_ = 0.0f;
+                volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
 
-            // Advance station index to next station
-            stationIndex_ = (stationIndex_ + 1) % kNumStations;
-            stationChanged_ = true; // Raise flag for the audio task
+                showVolume(volumeCurrent_);
 
-            // Erase station name
-            stationStr_ = "";
-            stationUpdatedFlag_ = true; // Raise flag for display update routine
+                // Advance station index to next station
+                stationIndex_ = (stationIndex_ + 1) % kNumStations;
+                stationChanged_ = true; // Raise flag for the audio task
 
-            // Erase stream info
-            infoStr_ = "";
-            infoUpdatedFlag_ = true; // Raise flag for display update routine
+                // Erase station name
+                stationStr_ = "";
+                stationDisplayFlag_ = true; // Raise flag for display update routine
+
+                // Erase stream info
+                infoStr_ = "";
+                infoDisplayFlag_ = true; // Raise flag for display update routine
+
+                showPlayState(false);
+            }
         }
         else {
             // Increase volume gradually after station change
@@ -640,6 +679,43 @@ void loop() {
             }
         }
 
+        unsigned long curTime = millis();
+
+        // Check every 200 ms whether power button has been pressed
+        if (curTime - pwrBtnCheckTime_ > 200) {
+            uint8_t pwrBtnState = M5.Axp.GetBtnPress();
+
+            pwrBtnCheckTime_ = curTime;
+
+            // Stop playing if press or long press has been detected
+            if ( (pwrBtnState & 0x01) || (pwrBtnState & 0x02) ) {
+                
+                if (pwrBtnState & 0x01) {
+                    log_d("Pwr button long press detected.");
+                }
+                else {
+                    log_d("Pwr button press detected.");
+                }
+                
+                userStationPause_ = true; // Set status to 'pause'
+                userStationPauseChanged_ = true; // Raise flag that status has changed
+
+                // Turn down volume while paused
+                volumeCurrent_ = 0;
+                volumeCurrentF_ = 0.0f;
+                volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
+
+                showVolume(volumeCurrent_); // Show volume on display
+
+                // Erase stream info
+                infoStr_ = "";
+                infoDisplayFlag_ = true; // Raise flag for display update routine
+
+                showPlayState(false);
+            }
+        }
+
+        // Notify user in case no data arrives through the stream
         if (connectionError_) {
             stationSprite_.fillSprite(TFT_RED);
             stationSprite_.setTextColor(TFT_WHITE);
@@ -651,25 +727,31 @@ void loop() {
         }
         else {
             // Update the station name if flag is raised
-            if (stationUpdatedFlag_) {
+            if (stationDisplayFlag_) {
                 showStation();
-                stationUpdatedFlag_ = false; // Clear update flag
+                stationDisplayFlag_ = false; // Clear update flag
+
+                showPlayState(true);
             }
 
+            // Update song info (usually artist and title)
             showSongInfo();
-            vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
-        }
 
-        if (buttonBlue.wasPressed()) { // Send song info to IFTTT webhook after the blue button was pressed
-            sendTitle();
+            // Send song info to IFTTT webhook after the blue button was pressed
+            if (buttonBlue.wasPressed()) {
+                sendTitle();
+            }
+
+            vTaskDelay(20 / portTICK_PERIOD_MS); // Wait until next cycle
         }
     }
     else {
+        // Is the device in bluetooth a2dp sink mode?
         if (deviceMode_ == A2DP) {
             // Update the station name if flag is raised
-            if (stationUpdatedFlag_) {
+            if (stationDisplayFlag_) {
                 showStation();
-                stationUpdatedFlag_ = false; // Clear update flag
+                stationDisplayFlag_ = false; // Clear update flag
             }
 
             showSongInfo();
@@ -700,13 +782,13 @@ void audio_eof_mp3(const char *info){  //end of file
 }
 void audio_showstation(const char *info){
     stationStr_ = info;
-    stationUpdatedFlag_ = true; // Raise flag for the display update routine
+    stationDisplayFlag_ = true; // Raise flag for the display update routine
 
     // Serial.print("station     ");Serial.println(info);
 }
 void audio_showstreamtitle(const char *info){
     infoStr_ = info;
-    infoUpdatedFlag_ = true; // Raise flag for the display update routine
+    infoDisplayFlag_ = true; // Raise flag for the display update routine
 
     // Serial.print("streamtitle ");Serial.println(info);
 }
@@ -749,7 +831,7 @@ void avrc_metadata_callback(uint8_t id, const uint8_t *text) {
         }
     }
     
-    infoUpdatedFlag_ = true; // Raise flag for the display update routine
+    infoDisplayFlag_ = true; // Raise flag for the display update routine
     // Serial.printf("==> AVRC metadata rsp: attribute id 0x%x, %s\n", id, text);
 }
 
@@ -759,7 +841,7 @@ void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*) {
 
     if (state != ESP_A2D_CONNECTION_STATE_CONNECTED) {
         infoStr_ = "not connected";
-        infoUpdatedFlag_ = true; // Raise flag for the display update routine
+        infoDisplayFlag_ = true; // Raise flag for the display update routine
     }
 }
 
