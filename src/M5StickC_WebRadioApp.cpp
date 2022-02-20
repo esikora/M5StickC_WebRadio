@@ -696,22 +696,27 @@ void loop() {
                 else {
                     log_d("Pwr button press detected.");
                 }
-                
-                userStationPause_ = true; // Set status to 'pause'
-                userStationPauseChanged_ = true; // Raise flag that status has changed
 
-                // Turn down volume while paused
-                volumeCurrent_ = 0;
-                volumeCurrentF_ = 0.0f;
-                volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
+                if (!userStationPause_) {
+                    userStationPause_ = true; // Set status to 'pause'
+                    userStationPauseChanged_ = true; // Raise flag that status has changed
 
-                showVolume(volumeCurrent_); // Show volume on display
+                    // Turn down volume while paused
+                    volumeCurrent_ = 0;
+                    volumeCurrentF_ = 0.0f;
+                    volumeCurrentChangedFlag_ = true; // Raise flag for the audio task
 
-                // Erase stream info
-                infoStr_ = "";
-                infoDisplayFlag_ = true; // Raise flag for display update routine
+                    showVolume(volumeCurrent_); // Show volume on display
 
-                showPlayState(false);
+                    // Erase stream info
+                    infoStr_ = "";
+                    infoDisplayFlag_ = true; // Raise flag for display update routine
+
+                    showPlayState(false);
+                }
+                else {
+                    log_d("Already paused - nothing to do.");
+                }
             }
         }
 
