@@ -1,7 +1,8 @@
 # M5StickC_WebRadio
-Audio project based on an M5StickC Plus (ESP32) with I²S digital audio output.
+Audio project based on an M5StickC Plus (ESP32) with I²S digital audio output:
 - Internet radio
 - Bluetooth A2DP sink
+- Song info can be sent to IFTTT webhook
 
 ## Getting Started
 #### Development environment
@@ -16,10 +17,17 @@ Audio project based on an M5StickC Plus (ESP32) with I²S digital audio output.
 
 #### Peripherals
 - PCM5102 I²S DAC board
+- [Dual-button unit](https://docs.m5stack.com/en/unit/dual_button)
 
 #### Libraries used
 - [M5StickCPlus](https://github.com/m5stack/M5StickC-Plus)
 - [ESP32-audioI2S](https://github.com/schreibfaul1/ESP32-audioI2S)
+
+#### Usage
+- Button A: Change radio station / Resume playing (if paused)
+- Button B: Switch device mode (internet radio, bluetooth A2DP sink)
+- Button Pwr: Pause playing radio station
+- Blue button (dual-button unit): Send current song info to IFTTT webhook
 
 ## Project Description
 
