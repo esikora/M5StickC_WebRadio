@@ -96,13 +96,19 @@ String stationStr_ = "";
 // Flag indicating the station name has changed
 bool stationDisplayFlag_ = false;
 
-// Flag indicating that the connection to a host could not be established
-bool connectionError_ = false;
+// audioProcessing: Flag indicating that the connection to a host could not be established
+bool connectError_ = false;
 
-// Status indicating the user has paused the current radio stream
+// audioProcessing: Flag indicating that the current radio stream provides too little or no data
+bool streamError_ = false;
+
+// main: Status indicating the user has paused the current radio stream
 bool userStationPause_ = false;
 
-// Flag indicating the userStationPause_ status has changed
+/* Flag indicating that 'userStationPause_' has changed
+     main: set
+     audioProcessing: clear
+*/
 bool userStationPauseChanged_ = false;
 
 // Time at which the state of the power button has been read
@@ -163,6 +169,11 @@ void avrc_volume_change_callback(int vol);
 
 // Forward declaration of the connection state change callback in bluetooth sink mode
 void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*);
+
+/**
+ * Callback for WiFi station disconnected event.
+ */
+void wifiCallbackStaDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 
 /**
  * Shows a welcome message at startup of the device on the TFT display.
@@ -266,6 +277,49 @@ void showPlayState(bool isPlaying) {
 }
 
 /**
+ * Starts WiFi connection and waits for a specified amount of time for the WiFi status to become 'WL_CONNECTED'.
+ * 
+ * @param maxInterval Maximum waiting time in ms.
+ */
+bool connectWiFi(uint32_t maxInterval = 5000) {
+    log_d("WiFi status before WiFi.begin = %u", WiFi.status());
+
+    wl_status_t wifiStatus = WiFi.begin(WifiCredentials::SSID, WifiCredentials::PASSWORD);
+
+    log_d("WiFi status after WiFi.begin = %u", wifiStatus);
+
+    /*  wl_status_t:
+
+        WL_IDLE_STATUS      = 0,
+        WL_NO_SSID_AVAIL    = 1,
+        WL_SCAN_COMPLETED   = 2,
+        WL_CONNECTED        = 3,
+        WL_CONNECT_FAILED   = 4,
+        WL_CONNECTION_LOST  = 5,
+        WL_DISCONNECTED     = 6
+    */
+    
+    unsigned long startTime = millis();
+    unsigned long passedTime = 0;
+
+    while ( wifiStatus != WL_CONNECTED && (passedTime < maxInterval) ) {
+        int i = 0;
+        
+        while ( wifiStatus != WL_CONNECTED && i < 10) {
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            wifiStatus = WiFi.status();
+            ++i;
+        }
+        
+        passedTime = millis() - startTime;
+
+        log_d("WiFi status after %lu ms = %u", passedTime, wifiStatus);
+    }
+
+    return wifiStatus == WL_CONNECTED;
+}
+
+/**
  * Connects to the specified WiFi network and starts the device in internet radio mode.
  * Audio task is started.
  */
@@ -281,11 +335,10 @@ void startRadio() {
         // Initialize WiFi and connect to network
         WiFi.mode(WIFI_STA);
         WiFi.setHostname(kDeviceName);
-        WiFi.begin(WifiCredentials::SSID, WifiCredentials::PASSWORD);
-
-        while (!WiFi.isConnected()) {
-            delay(100);
-        }
+        WiFi.onEvent(wifiCallbackStaDisconnected, SYSTEM_EVENT_STA_DISCONNECTED); // Register callback for disconnect events
+        
+        // Connect to WiFi station
+        while ( !connectWiFi(10000) );
 
         // Display own IP address after connecting
         M5.Lcd.println(" Connected to WiFi");
@@ -346,7 +399,7 @@ void stopRadio() {
         stationChangedMute_ = true;
         String stationStr_ = "";
         stationDisplayFlag_ = false;
-        connectionError_ = false;
+        streamError_ = false;
         infoStr_ = "";
         infoDisplayFlag_ = false;
         titleTextWidth_ = 0;
@@ -475,17 +528,19 @@ void connectToStation() {
     // Establish HTTP connection to requested stream URL
     const char *streamUrl = kStationURLs[stationIndex_].c_str();
 
-    bool success = pAudio_->connecttohost( streamUrl );
+    bool success = pAudio_->connecttohost( streamUrl ); // May fail due to wrong host address, socket error or timeout
 
     if (success) {
         stationChanged_ = false; // Clear flag
-        connectionError_ = false; // Clear in case a connection error occured before
+        streamError_ = false; // Clear in case a connection error occured before
 
         timeConnect_ = millis(); // Store time in order to detect stream errors after connecting
     }
     else {
         stationChanged_ = false; // Clear flag
-        connectionError_ = true; // Raise connection error flag
+        streamError_ = true; // Raise connection error flag
+
+        log_d("Failed to connect to host '%s'. WiFi status: %u", streamUrl, WiFi.status());
     }
 
     // Update buffer state variables
@@ -533,14 +588,14 @@ void audioProcessing(void *p) {
             if ( audioBufferFilled_ > 0.9f * audioBufferSize_) {
                 setAudioShutdown(false);
                 stationChangedMute_ = false;
-                connectionError_ = false;
+                streamError_ = false;
             }
             else {
                 // If the stream does not build up within a few seconds something is wrong with the connection
                 if ( millis() - timeConnect_ > 3000 ) {
-                    if (!connectionError_) {
+                    if (!streamError_) {
                         Serial.printf("Audio buffer low: %u of %u bytes.\n", audioBufferFilled_, audioBufferSize_);
-                        connectionError_ = true; // Raise connection error flag
+                        streamError_ = true; // Raise connection error flag
                     }
                 }
             }
@@ -642,8 +697,22 @@ void loop() {
         if (M5.BtnA.wasPressed()) {
             
             if (userStationPause_) {
-                userStationPause_ = false;
-                userStationPauseChanged_ = true;
+                // WiFi may have become idle
+                if (WiFi.status() == WL_CONNECTED) {
+                    userStationPause_ = false;
+                    userStationPauseChanged_ = true;
+                }
+                else {
+                    if ( connectWiFi(10000) ) {
+                        userStationPause_ = false;
+                        userStationPauseChanged_ = true;
+
+                        connectError_ = false;
+                    }
+                    else {
+                        connectError_ = true;
+                    }
+                }
             }
             else {
                 // Turn down volume
@@ -687,8 +756,8 @@ void loop() {
 
             pwrBtnCheckTime_ = curTime;
 
-            // Stop playing if press or long press has been detected
-            if ( (pwrBtnState & 0x01) || (pwrBtnState & 0x02) ) {
+            // Stop playing if (press XOR long press) has been detected
+            if ( (pwrBtnState & 0x01) != (pwrBtnState & 0x02) ) { // if both occur simultaneously it is an i2c error
                 
                 if (pwrBtnState & 0x01) {
                     log_d("Pwr button long press detected.");
@@ -721,11 +790,18 @@ void loop() {
         }
 
         // Notify user in case no data arrives through the stream
-        if (connectionError_) {
+        if (connectError_ || streamError_) {
             stationSprite_.fillSprite(TFT_RED);
             stationSprite_.setTextColor(TFT_WHITE);
             stationSprite_.setCursor(4, 0);
-            stationSprite_.print("Stream unavailable");
+
+            if (streamError_) {
+                stationSprite_.print("Stream unavailable");
+            }
+            else {
+                stationSprite_.print("WiFi unavailable");
+            }
+
             stationSprite_.pushSprite(0, 2); // Render sprite to screen
 
             vTaskDelay(200 / portTICK_PERIOD_MS); // Wait until next cycle
@@ -853,4 +929,8 @@ void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void*) {
 void avrc_volume_change_callback(int vol) {
     volumeCurrent_ = vol;
     volumeCurrentChangedFlag_ = true;
+}
+
+void wifiCallbackStaDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
+    log_d("WiFi: Station disconnected. Reason: %u", info.disconnected.reason);
 }
