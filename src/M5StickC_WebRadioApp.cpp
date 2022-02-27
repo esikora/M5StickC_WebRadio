@@ -677,6 +677,8 @@ void loop() {
 
     // Button B: switch mode and reboot device (internet radio <-> a2dp sink)
     if (M5.BtnB.wasReleased()) {
+        log_d("Button B press detected.")
+
         if (deviceMode_ == RADIO) {
             EEPROM.writeByte(0, 2); // Enter A2DP mode after restart
             EEPROM.commit();
@@ -695,8 +697,13 @@ void loop() {
 
         // Button A: Switch to next station
         if (M5.BtnA.wasPressed()) {
+
+            log_d("Button A press detected.");
             
             if (userStationPause_) {
+                
+                log_d("Resume playing.");
+
                 // WiFi may have become idle
                 if (WiFi.status() == WL_CONNECTED) {
                     userStationPause_ = false;
@@ -715,6 +722,8 @@ void loop() {
                 }
             }
             else {
+                log_d("Change station.");
+
                 // Turn down volume
                 volumeCurrent_ = 0;
                 volumeCurrentF_ = 0.0f;
@@ -756,16 +765,19 @@ void loop() {
 
             pwrBtnCheckTime_ = curTime;
 
-            // Stop playing if (press XOR long press) has been detected
-            if ( (pwrBtnState & 0x01) != (pwrBtnState & 0x02) ) { // if both occur simultaneously it is an i2c error
-                
-                if (pwrBtnState & 0x01) {
-                    log_d("Pwr button long press detected.");
-                }
-                else {
-                    log_d("Pwr button press detected.");
-                }
+            if (pwrBtnState & 0x01) {
+                log_d("Pwr button long press detected.");
+            }
 
+            if (pwrBtnState & 0x02) {
+                log_d("Pwr button press detected.");
+            }
+
+            // Stop playing if (press XOR long press) has been detected
+            if ( !(pwrBtnState & 0x01) != !(pwrBtnState & 0x02) ) { // if both occur simultaneously it is an i2c error
+
+                log_d("Pause.");
+                
                 if (!userStationPause_) {
                     userStationPause_ = true; // Set status to 'pause'
                     userStationPauseChanged_ = true; // Raise flag that status has changed
@@ -791,16 +803,17 @@ void loop() {
 
         // Notify user in case no data arrives through the stream
         if (connectError_ || streamError_) {
-            stationSprite_.fillSprite(TFT_RED);
-            stationSprite_.setTextColor(TFT_WHITE);
-            stationSprite_.setCursor(4, 0);
+            if (connectError_) {
+                stationSprite_.print("WiFi unavailable");
+            }
 
             if (streamError_) {
                 stationSprite_.print("Stream unavailable");
             }
-            else {
-                stationSprite_.print("WiFi unavailable");
-            }
+
+            stationSprite_.fillSprite(TFT_RED);
+            stationSprite_.setTextColor(TFT_WHITE);
+            stationSprite_.setCursor(4, 0);
 
             stationSprite_.pushSprite(0, 2); // Render sprite to screen
 
@@ -820,6 +833,8 @@ void loop() {
 
             // Send song info to IFTTT webhook after the blue button was pressed
             if (buttonBlue.wasPressed()) {
+                log_d("Button 'blue' press detected.")
+
                 sendTitle();
             }
 
